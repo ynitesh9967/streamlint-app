@@ -1,1 +1,3 @@
-!pip install streamlit openpyxl pandas
+streamlit
+pandas
+openpyxl
