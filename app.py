@@ -122,87 +122,81 @@ def process_script_2(file2, file1_output):
   return new_output
 
 def process_script_3(yesterday_file, today_file):
+    # --- Function to update remarks based on matching ---
     def update_sheet(df_yesterday, df_today, key_column):
-        # Standardizing column names
+        # Clean columns (exactly as in your logic)
         df_yesterday.columns = df_yesterday.columns.str.strip().str.upper()
         df_today.columns = df_today.columns.str.strip().str.upper()
-        
-        if key_column not in df_yesterday.columns or key_column not in df_today.columns:
-            st.error(f"Missing required column: {key_column}")
-            return None
-        
-        # More thorough cleaning of key column
-        df_yesterday[key_column] = df_yesterday[key_column].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
-        df_today[key_column] = df_today[key_column].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
-        
-        # Initialize REMARK if missing
+
+        # Clean key column (your exact approach)
+        df_yesterday[key_column] = df_yesterday[key_column].astype(str).str.strip()
+        df_today[key_column] = df_today[key_column].astype(str).str.strip()
+
+        # Initialize REMARK if missing (as in your code)
         if "REMARK" not in df_yesterday.columns:
             df_yesterday["REMARK"] = "Pending"
         else:
             df_yesterday["REMARK"] = df_yesterday["REMARK"].astype(str).str.strip()
-        
-        # More reliable matching using merge
-        matches = pd.merge(
-            df_yesterday[[key_column]],
-            df_today[[key_column]],
-            on=key_column,
-            how='inner'
-        )[key_column].unique()
-        
-        # Update remarks for matches that were pending
-        match_mask = df_yesterday[key_column].isin(matches)
-        pending_mask = df_yesterday["REMARK"].str.startswith("Pending", na=False)
-        df_yesterday.loc[match_mask & pending_mask, "REMARK"] = "System Refund"
-        
+
+        # Your exact matching logic
+        matching_values = df_yesterday[key_column].isin(df_today[key_column])
+        pending_mask = df_yesterday["REMARK"].str.lower().str.startswith('pending', na=False)
+        df_yesterday.loc[matching_values & pending_mask, "REMARK"] = "System Refund"
+
         return df_yesterday
-    
-    # Load files into dataframes
+
+    # Load files into dataframes (following your approach)
     df_yesterday_bat = pd.read_excel(yesterday_file, sheet_name="BAT", dtype=str)
     df_today_bat = pd.read_excel(today_file, sheet_name="BAT", dtype=str)
     df_yesterday_cvd = pd.read_excel(yesterday_file, sheet_name="CVD", dtype=str)
     df_today_cvd = pd.read_excel(today_file, sheet_name="CVD", dtype=str)
+
+    # Process BAT and CVD sheets with your key columns
+    updated_bat = update_sheet(df_yesterday_bat, df_today_bat, "VLOOKUP WITH CVD")
+    updated_cvd = update_sheet(df_yesterday_cvd, df_today_cvd, "VLOOKUP WITH BAT")
+
+    # Your exact column validation
+    required_cols_bat = ["SETTLE DATE", "DOMESTIC AMT"]
+    required_cols_cvd = ["SETTLE DATE", "DOMESTIC AMT", "REMARK"]
     
-    # Process BAT and CVD sheets
-    updated_bat = update_sheet(df_yesterday_bat, df_today_bat, "MERCHANT_TRACKID")
-    updated_cvd = update_sheet(df_yesterday_cvd, df_today_cvd, "MERCHANT_TRACKID")
-    
-    if updated_bat is None or updated_cvd is None:
+    if not all(col in updated_bat.columns for col in required_cols_bat):
+        st.error("Missing required columns in 'BAT' sheet")
         return None
-    
-    # Convert amounts to numeric
-    updated_bat["DOMESTIC AMT"] = pd.to_numeric(updated_bat["DOMESTIC AMT"], errors='coerce')
-    updated_cvd["DOMESTIC AMT"] = pd.to_numeric(updated_cvd["DOMESTIC AMT"], errors='coerce')
-    
-    # Summarize data
-    def summarize(df, group_col, amount_col):
-        return df.groupby(group_col).agg(
-            Count=(amount_col, "count"),
-            Amount=(amount_col, "sum")
-        ).reset_index()
-    
-    # Get summaries
-    bat_summary = summarize(updated_bat, "SETTLE DATE", "DOMESTIC AMT")
-    cvd_summary = summarize(updated_cvd, "SETTLE DATE", "DOMESTIC AMT")
-    
-    # Get pending amounts
-    pending_cvd = updated_cvd[updated_cvd["REMARK"].str.startswith("Pending", na=False)]
-    pending_summary = summarize(pending_cvd, "SETTLE DATE", "DOMESTIC AMT")
-    
-    # Merge summaries and calculate net amount
-    summary_df = bat_summary.merge(cvd_summary, on="SETTLE DATE", how="outer", 
-                                 suffixes=("_BAT", "_CVD"))
-    summary_df = summary_df.merge(pending_summary, on="SETTLE DATE", how="outer",
-                                suffixes=("", "_PENDING"))
-    
-    # Calculate net amount (BAT - CVD)
-    if 'Amount_BAT' in summary_df.columns and 'Amount_CVD' in summary_df.columns:
-        summary_df['Net_Amount'] = summary_df['Amount_BAT'] - summary_df['Amount_CVD']
-    
+    if not all(col in updated_cvd.columns for col in required_cols_cvd):
+        st.error("Missing required columns in 'CVD' sheet")
+        return None
+
+    # Convert amounts (your exact approach)
+    updated_bat['DOMESTIC AMT'] = pd.to_numeric(updated_bat['DOMESTIC AMT'], errors='coerce')
+    updated_cvd['DOMESTIC AMT'] = pd.to_numeric(updated_cvd['DOMESTIC AMT'], errors='coerce')
+
+    # Your exact summary calculation logic
+    bat_summary = updated_bat.groupby("SETTLE DATE").agg(
+        Bank_MPR_Count=("DOMESTIC AMT", "count"),
+        Bank_MPR_Amount=("DOMESTIC AMT", "sum")
+    ).reset_index()
+
+    cvd_summary = updated_cvd.groupby("SETTLE DATE").agg(
+        Bank_MPR_Refund_Count=("DOMESTIC AMT", "count"),
+        Bank_MPR_Refund_Amount=("DOMESTIC AMT", "sum")
+    ).reset_index()
+
+    pending_cvd = updated_cvd[updated_cvd["REMARK"].str.lower().str.startswith("pending", na=False)]
+    pending_summary = pending_cvd.groupby("SETTLE DATE").agg(
+        Pending_Refund_Count=("DOMESTIC AMT", "count"),
+        Pending_Refund_Sum=("DOMESTIC AMT", "sum")
+    ).reset_index()
+
+    # Your exact merge logic
+    summary_df = bat_summary.merge(cvd_summary, on="SETTLE DATE", how="outer")\
+                           .merge(pending_summary, on="SETTLE DATE", how="outer")
+
+    # Create output (as in your code)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         updated_bat.to_excel(writer, sheet_name='BAT', index=False)
         updated_cvd.to_excel(writer, sheet_name='CVD', index=False)
-        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        summary_df.to_excel(writer, sheet_name='summary_output', index=False)
     output.seek(0)
     
     return output
