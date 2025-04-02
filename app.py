@@ -131,14 +131,28 @@ def process_script_3(yesterday_file, today_file):
             st.error(f"Missing required column: {key_column}")
             return None
         
-        df_yesterday[key_column] = df_yesterday[key_column].astype(str).str.strip()
-        df_today[key_column] = df_today[key_column].astype(str).str.strip()
+        # More thorough cleaning of key column
+        df_yesterday[key_column] = df_yesterday[key_column].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
+        df_today[key_column] = df_today[key_column].astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
         
+        # Initialize REMARK if missing
         if "REMARK" not in df_yesterday.columns:
             df_yesterday["REMARK"] = "Pending"
+        else:
+            df_yesterday["REMARK"] = df_yesterday["REMARK"].astype(str).str.strip()
         
-        matching_values = df_yesterday[key_column].isin(df_today[key_column])
-        df_yesterday.loc[matching_values & df_yesterday["REMARK"].str.startswith("Pending", na=False), "REMARK"] = "System Refund"
+        # More reliable matching using merge
+        matches = pd.merge(
+            df_yesterday[[key_column]],
+            df_today[[key_column]],
+            on=key_column,
+            how='inner'
+        )[key_column].unique()
+        
+        # Update remarks for matches that were pending
+        match_mask = df_yesterday[key_column].isin(matches)
+        pending_mask = df_yesterday["REMARK"].str.startswith("Pending", na=False)
+        df_yesterday.loc[match_mask & pending_mask, "REMARK"] = "System Refund"
         
         return df_yesterday
     
@@ -155,20 +169,34 @@ def process_script_3(yesterday_file, today_file):
     if updated_bat is None or updated_cvd is None:
         return None
     
+    # Convert amounts to numeric
+    updated_bat["DOMESTIC AMT"] = pd.to_numeric(updated_bat["DOMESTIC AMT"], errors='coerce')
+    updated_cvd["DOMESTIC AMT"] = pd.to_numeric(updated_cvd["DOMESTIC AMT"], errors='coerce')
+    
     # Summarize data
     def summarize(df, group_col, amount_col):
-        df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
         return df.groupby(group_col).agg(
             Count=(amount_col, "count"),
             Amount=(amount_col, "sum")
         ).reset_index()
     
+    # Get summaries
     bat_summary = summarize(updated_bat, "SETTLE DATE", "DOMESTIC AMT")
     cvd_summary = summarize(updated_cvd, "SETTLE DATE", "DOMESTIC AMT")
-    pending_summary = summarize(updated_cvd[updated_cvd["REMARK"].str.startswith("Pending", na=False)], "SETTLE DATE", "DOMESTIC AMT")
     
-    summary_df = bat_summary.merge(cvd_summary, on="SETTLE DATE", how="outer", suffixes=("_BAT", "_CVD"))
-    summary_df = summary_df.merge(pending_summary, on="SETTLE DATE", how="outer")
+    # Get pending amounts
+    pending_cvd = updated_cvd[updated_cvd["REMARK"].str.startswith("Pending", na=False)]
+    pending_summary = summarize(pending_cvd, "SETTLE DATE", "DOMESTIC AMT")
+    
+    # Merge summaries and calculate net amount
+    summary_df = bat_summary.merge(cvd_summary, on="SETTLE DATE", how="outer", 
+                                 suffixes=("_BAT", "_CVD"))
+    summary_df = summary_df.merge(pending_summary, on="SETTLE DATE", how="outer",
+                                suffixes=("", "_PENDING"))
+    
+    # Calculate net amount (BAT - CVD)
+    if 'Amount_BAT' in summary_df.columns and 'Amount_CVD' in summary_df.columns:
+        summary_df['Net_Amount'] = summary_df['Amount_BAT'] - summary_df['Amount_CVD']
     
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -178,7 +206,6 @@ def process_script_3(yesterday_file, today_file):
     output.seek(0)
     
     return output
-
 def main():
   st.title("Excel Processing Pipeline")
   step = st.sidebar.radio("Choose Step", ("Step 1", "Step 2", "Step 3"))
